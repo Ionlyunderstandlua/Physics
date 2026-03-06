@@ -49,5 +49,10 @@ void main(){
     uint ObjectID = gl_GlobalInvocationID.z*gl_WorkGroupSize.x*gl_WorkGroupSize.y+gl_GlobalInvocationID.y*gl_WorkGroupSize.x+gl_GlobalInvocationID.x;
     int objId = int(ObjectID);
     
-    velocities[objId] += vec4(gravity,0.0);
+    // Skip rigid objects and objects with gravity disabled
+    if (settings[objId].dynamics.y != 0 || settings[objId].dynamics.x == 0) {
+        return;
+    }
+
+    velocities[objId].xyz += gravity * deltaTime;
 }

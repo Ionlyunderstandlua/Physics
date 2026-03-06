@@ -139,9 +139,9 @@ void main(){
                 checkAxis(objId,index,normals[objId].up.xyz),
                 checkAxis(objId,index,normals[objId].right.xyz),
 
-                checkAxis(index,objId,normals[index].look.xyz),
-                checkAxis(index,objId,normals[index].up.xyz),
-                checkAxis(index,objId,normals[index].right.xyz),
+                checkAxis(objId,index,normals[index].look.xyz),
+                checkAxis(objId,index,normals[index].up.xyz),
+                checkAxis(objId,index,normals[index].right.xyz),
 
                 
                 checkAxis(objId,index,cross(normals[objId].look.xyz,normals[index].look.xyz)),
@@ -183,38 +183,105 @@ void main(){
                 continue;
             }
 
-            // Collisions   
+            // Collisions
             collisionIndex[objId] = 1;
-            
-            
+
+            // Skip if this object is rigid (cannot be moved)
+            if (settings[objId].dynamics.y != 0) {
+                continue;
+            }
+
             // Resolve Collisions
-            vec3 axis = normalize(minmumOverlap.yzw);
+            // minmumOverlap.yzw points from objId toward index
+            // Negate so axis points AWAY from index (direction to push objId out)
+            vec3 axis = -normalize(minmumOverlap.yzw);
             float penetration = minmumOverlap.x;
-            vec3 mtv = axis * penetration;
 
-            // Reflect velocities along impact normal with restitution to bleed energy
-
-            vec4 relVelocity = velocities[index]-velocities[objId];
-
-            float vAlong = dot(relVelocity.xyz, axis);
             float restitution = (settings[objId].dynamics.z + settings[index].dynamics.z) * 0.5;
 
-            float J = (-(1+restitution)*vAlong)/((1/settings[objId].dynamics.w)+(1/settings[index].dynamics.w));
+            float massA = settings[objId].dynamics.w;
+            float massB = settings[index].dynamics.w;
+            // invMass = 0 for rigid objects (infinite mass)
+            float invMassA = 1.0 / massA;
+            float invMassB = (settings[index].dynamics.y == 0) ? 1.0 / massB : 0.0;
 
-            vec3 Impulse = J*axis;
+            float inertiaA = settings[objId].radiusPadding.y;
+            float inertiaB = settings[index].radiusPadding.y;
+            float invInertiaA = (inertiaA > 0.0) ? 1.0 / inertiaA : 0.0;
+            float invInertiaB = (settings[index].dynamics.y == 0 && inertiaB > 0.0) ? 1.0 / inertiaB : 0.0;
 
-            velocities[objId].xyz += Impulse;
-            velocities[index].xyz += Impulse;
+            // Compute contact point from the deepest-penetrating vertices of objId
+            // For a rotated cube landing on a corner/edge, these vertices are
+            // offset laterally from center, creating the torque lever arm
+            vec3 centerA = positions[objId].xyz;
+            vec3 centerB = positions[index].xyz;
 
-            rotations[objId] = relVelocity.xyzw;
-            collisionIndex[objId] = vAlong;
-
-            //Apply direct positional correction (split the penetration between both objects)
-            if (settings[objId].dynamics.y == 0){
-                positions[objId].xyz += axis * penetration * 0.5 * (1-restitution);
+            // Find the vertices of objId that penetrate deepest into the other
+            // object (smallest projection along axis = farthest in -axis direction)
+            float minProj = dot(getWorldVertex(objId, 0), axis);
+            for (int vi = 1; vi < 8; vi++) {
+                float p = dot(getWorldVertex(objId, vi), axis);
+                minProj = min(minProj, p);
             }
-            if (settings[index].dynamics.y == 0){
-                positions[index].xyz += axis * penetration * 0.5 * (1-restitution);  
+
+            // Average all vertices within penetration depth of the deepest point
+            // This gives edge midpoints for edge contacts, corner points for corners
+            float contactThreshold = minProj + penetration * 0.5;
+            vec3 contactPoint = vec3(0.0);
+            int contactCount = 0;
+            for (int vi = 0; vi < 8; vi++) {
+                vec3 wv = getWorldVertex(objId, vi);
+                if (dot(wv, axis) <= contactThreshold) {
+                    contactPoint += wv;
+                    contactCount++;
+                }
+            }
+            if (contactCount > 0) {
+                contactPoint /= float(contactCount);
+            } else {
+                contactPoint = centerA - axis * (penetration * 0.5);
+            }
+
+            vec3 rA = contactPoint - centerA;
+            vec3 rB = contactPoint - centerB;
+
+            // Relative velocity at contact including angular contribution
+            vec3 velA = velocities[objId].xyz + cross(aelocities[objId].xyz, rA);
+            vec3 velB = velocities[index].xyz + cross(aelocities[index].xyz, rB);
+            vec3 relVelContact = velA - velB;
+            float vAlongContact = dot(relVelContact, axis);
+
+            // Impulse scalar including rotational terms
+            vec3 crossRA = cross(rA, axis);
+            vec3 crossRB = cross(rB, axis);
+            float angularTermA = dot(crossRA * invInertiaA, crossRA);
+            float angularTermB = dot(crossRB * invInertiaB, crossRB);
+            float denominator = invMassA + invMassB + angularTermA + angularTermB;
+
+            // Apply velocity impulse only if objects are closing
+            if (vAlongContact < 0.0 && denominator > 0.0) {
+                float J = (-(1.0 + restitution) * vAlongContact) / denominator;
+                vec3 impulse = J * axis;
+
+                // Only modify THIS object's velocity (avoid race conditions)
+                velocities[objId].xyz += impulse * invMassA;
+                aelocities[objId].xyz += cross(rA, impulse) * invInertiaA;
+            }
+
+            // ALWAYS apply positional correction to resolve penetration
+            // This prevents objects from passing through even at high velocities
+            float totalInvMass = invMassA + invMassB;
+            if (totalInvMass > 0.0) {
+                float correctionShare = invMassA / totalInvMass;
+                positions[objId].xyz += axis * penetration * correctionShare;
+            }
+
+            // Zero out velocity component pushing into the collision surface
+            // This prevents gravity (which runs after SAT) from immediately
+            // pulling the object back through the corrected position
+            float velIntoSurface = dot(velocities[objId].xyz, -axis);
+            if (velIntoSurface > 0.0) {
+                velocities[objId].xyz += axis * velIntoSurface;
             }
             
             

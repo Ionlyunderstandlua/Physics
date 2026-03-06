@@ -15,6 +15,7 @@ if __name__ == '__main__':
 
     main_scene_path = f"{current_directory}/assets/scenes/phycoll.scene"
     main_scene = SceneData.fromfile(main_scene_path)
+    main_scene.Instances3D["TopCube"].Rotation = Vec3(30,0,0)
 
 
 

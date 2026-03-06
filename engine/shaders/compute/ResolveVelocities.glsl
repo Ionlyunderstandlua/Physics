@@ -45,15 +45,40 @@ layout(std430, binding=8) buffer Collisions {
 uniform vec3 gravity;
 uniform float deltaTime;
 
+mat3 rotationMatrix(vec3 euler) {
+    float cx = cos(euler.x); float sx = sin(euler.x);
+    float cy = cos(euler.y); float sy = sin(euler.y);
+    float cz = cos(euler.z); float sz = sin(euler.z);
+
+    // Rotation order: X * Y * Z (matching Instance3D.FromXYZ)
+    // GLSL mat3 is column-major: mat3(col0, col1, col2)
+    mat3 Rx = mat3(1, 0, 0,   0, cx, sx,   0, -sx, cx);
+    mat3 Ry = mat3(cy, 0, -sy,  0, 1, 0,   sy, 0, cy);
+    mat3 Rz = mat3(cz, sz, 0,  -sz, cz, 0,   0, 0, 1);
+
+    return Rx * Ry * Rz;
+}
+
 void main(){
     uint ObjectID = gl_GlobalInvocationID.z*gl_WorkGroupSize.x*gl_WorkGroupSize.y+gl_GlobalInvocationID.y*gl_WorkGroupSize.x+gl_GlobalInvocationID.x;
     int objId = int(ObjectID);
 
     if(settings[objId].dynamics.y == 0){
+        // Dynamic object: integrate velocity
         positions[objId].xyz += velocities[objId].xyz * deltaTime;
         rotations[objId].xyz += aelocities[objId].xyz * deltaTime;
 
-        // simple angular damping
+        // Simple angular damping
         aelocities[objId].xyz *= 0.98;
+    } else {
+        // Rigid/static object: force zero velocity to prevent drift
+        velocities[objId].xyz = vec3(0.0);
+        aelocities[objId].xyz = vec3(0.0);
     }
+
+    // Rebuild orientation normals from current rotation angles
+    mat3 rot = rotationMatrix(rotations[objId].xyz);
+    normals[objId].right = vec4(rot[0], 0.0);
+    normals[objId].up    = vec4(rot[1], 0.0);
+    normals[objId].look  = vec4(rot[2], 0.0);
 }

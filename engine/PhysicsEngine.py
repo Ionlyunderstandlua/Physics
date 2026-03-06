@@ -22,7 +22,7 @@ class PhysicsEngineSettings():
     ]   
 
 
-    gravity = -0.1
+    gravity = -9.82
 
 class PhysicsEngine():
     def __init__(self):
@@ -326,6 +326,10 @@ class PhysicsEngine():
         if self.total_physics_objects <= 0:
             return
 
+        # Clamp dt to prevent physics explosion when window loses/regains focus
+        # Pyglet accumulates the entire unfocused duration into one dt
+        dt = min(dt, 1.0 / 30.0)
+
         for compute_shader in self.compute_shader_programs:
             compute_shader.use()
 
@@ -385,17 +389,31 @@ class PhysicsEngine():
             ay = self.aelocityBufferData[pos_offset+1]
             az = self.aelocityBufferData[pos_offset+2]
 
+            # Read orientation normals (look, up, right) from GPU
+            nor_offset = physic_object_index * 12
+            lx = self.normalsvBufferData[nor_offset + 0]
+            ly = self.normalsvBufferData[nor_offset + 1]
+            lz = self.normalsvBufferData[nor_offset + 2]
+            ux = self.normalsvBufferData[nor_offset + 4]
+            uy = self.normalsvBufferData[nor_offset + 5]
+            uz = self.normalsvBufferData[nor_offset + 6]
+            rvx = self.normalsvBufferData[nor_offset + 8]
+            rvy = self.normalsvBufferData[nor_offset + 9]
+            rvz = self.normalsvBufferData[nor_offset + 10]
+
             physic_object.Position = Vec3(x,y,z)
             physic_object.Velocity = Vec3(vx,vy,vz)
 
             physic_object.Rotation = Vec3(rx,ry,rz)
             physic_object.Aelocity = Vec3(ax,ay,az)
 
+            physic_object.LookVector = Vec3(lx,ly,lz)
+            physic_object.UpVector = Vec3(ux,uy,uz)
+            physic_object.RightVector = Vec3(rvx,rvy,rvz)
+
             pos_offset += 4
 
-            print(physic_object_index,"\n",self.collisionBufferData[physic_object_index],"\n")
-
-            if self.collisionBufferData[physic_object_index] == 1:
+            if self.collisionBufferData[physic_object_index] != 0:
                 physic_object.texture.surfaceColor = Vec4(0.5,0,0,0)
             else:
                 physic_object.texture.surfaceColor = physic_object.texture.baseColor
